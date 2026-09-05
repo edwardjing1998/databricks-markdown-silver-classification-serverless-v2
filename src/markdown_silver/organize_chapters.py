@@ -17,6 +17,19 @@ source_document_ids:ARRAY<STRING>>>,
 continuations:ARRAY<STRUCT<source_document_id:STRING,continues_to_next_window:BOOLEAN>>
 >>""".replace("\n", "")
 
+# ai_query returns the contents of the single top-level responseFormat field in
+# ai.result. Therefore ai.result contains {"units": ..., "continuations": ...},
+# not {"analysis": {...}}.
+WINDOW_RESULT_SCHEMA = """STRUCT<
+units:ARRAY<STRUCT<
+concept_id:STRING,title:STRING,knowledge_markdown:STRING,
+examples:ARRAY<STRUCT<title:STRING,markdown:STRING,source_document_ids:ARRAY<STRING>>>,
+exercises:ARRAY<STRUCT<exercise_id:STRING,title:STRING,markdown:STRING,
+source_document_ids:ARRAY<STRING>,single_exercise_page:BOOLEAN>>,
+source_document_ids:ARRAY<STRING>>>,
+continuations:ARRAY<STRUCT<source_document_id:STRING,continues_to_next_window:BOOLEAN>>
+>""".replace("\n", "")
+
 FINAL_SCHEMA = """STRUCT<organization:STRUCT<
 chapter_title:STRING,
 units:ARRAY<STRUCT<
@@ -26,6 +39,16 @@ exercises:ARRAY<STRUCT<exercise_id:STRING,title:STRING,markdown:STRING,
 source_document_ids:ARRAY<STRING>,preserve_original:BOOLEAN>>,
 source_document_ids:ARRAY<STRING>>>
 >>""".replace("\n", "")
+
+FINAL_RESULT_SCHEMA = """STRUCT<
+chapter_title:STRING,
+units:ARRAY<STRUCT<
+unit_id:STRING,title:STRING,knowledge_markdown:STRING,
+examples_markdown:ARRAY<STRING>,
+exercises:ARRAY<STRUCT<exercise_id:STRING,title:STRING,markdown:STRING,
+source_document_ids:ARRAY<STRING>,preserve_original:BOOLEAN>>,
+source_document_ids:ARRAY<STRING>>
+>""".replace("\n", "")
 
 WINDOWS_TYPE = T.ArrayType(
     T.StructType(
@@ -118,12 +141,14 @@ def main() -> None:
         "chapter_key", F.col("source_hash").alias("existing_hash"),
         F.col("model_endpoint").alias("existing_model"),
         F.col("prompt_version").alias("existing_prompt"),
+        F.col("processing_status").alias("existing_status"),
     )
     pending = chapters.join(existing, "chapter_key", "left").filter(
         F.col("existing_hash").isNull()
         | (F.col("source_hash") != F.col("existing_hash"))
         | (F.coalesce("existing_model", F.lit("")) != settings.model_endpoint)
         | (F.coalesce("existing_prompt", F.lit("")) != settings.prompt_version)
+        | (F.coalesce("existing_status", F.lit("FAILED")) != F.lit("SUCCEEDED"))
     )
     if pending.limit(1).count() == 0:
         print("No new or changed chapters require organization.")
@@ -148,7 +173,9 @@ def main() -> None:
             "Analyze this ordered window from a mathematics-book chapter. Identify knowledge "
             "concepts, worked examples, and every individual exercise. Keep exact source document "
             "IDs and Markdown image links. Mark cross-window continuations. Do not invent content. "
-            "This is an intermediate analysis; overlapping pages may occur.\n"
+            "This is an intermediate analysis; overlapping pages may occur. Every unit must contain "
+            "concept_id, title, knowledge_markdown, examples, exercises, and source_document_ids. "
+            "A title must contain only a short title, never a full page or chapter.\n"
         ),
         F.concat(F.lit("BOOK_ID: "), F.col("book_id"), F.lit("\nCHAPTER_ID: "), F.col("chapter_id")),
         F.lit("\nPAGES_JSON:\n"), F.col("pages_json"),
@@ -162,7 +189,22 @@ def main() -> None:
                 f"responseFormat => '{WINDOW_SCHEMA}', failOnError => false)"
             ),
         )
-        .withColumn("parsed_window", F.from_json("ai.result", WINDOW_SCHEMA))
+        .withColumn("parsed_window", F.from_json("ai.result", WINDOW_RESULT_SCHEMA))
+    )
+    valid_window = (
+        F.col("parsed_window").isNotNull()
+        & F.col("parsed_window.units").isNotNull()
+        & (F.size("parsed_window.units") > 0)
+        & F.forall(
+            F.col("parsed_window.units"),
+            lambda unit: (
+                unit.concept_id.isNotNull()
+                & unit.title.isNotNull()
+                & unit.knowledge_markdown.isNotNull()
+                & unit.source_document_ids.isNotNull()
+                & (F.size(unit.source_document_ids) > 0)
+            ),
+        )
     )
     window_rows = analyzed.select(
         "window_id", "chapter_key", "book_id", "chapter_id", "window_number",
@@ -170,8 +212,11 @@ def main() -> None:
         "input_characters", F.col("ai.result").alias("raw_ai_result"),
         F.lit(settings.model_endpoint).alias("model_endpoint"),
         F.lit(settings.prompt_version).alias("prompt_version"),
-        F.when(F.col("parsed_window.analysis").isNotNull(), "SUCCEEDED").otherwise("FAILED").alias("processing_status"),
-        F.col("ai.errorMessage").alias("processing_error"), F.current_timestamp().alias("batch_time"),
+        F.when(valid_window, "SUCCEEDED").otherwise("FAILED").alias("processing_status"),
+        F.when(F.col("ai.errorMessage").isNotNull(), F.col("ai.errorMessage"))
+        .when(~valid_window, F.lit("AI result did not satisfy the required window schema"))
+        .alias("processing_error"),
+        F.current_timestamp().alias("batch_time"),
     )
     # This MERGE is the single action that evaluates each window's ai_query.
     # The next stage reads the durable result rather than caching a DataFrame,
@@ -235,7 +280,22 @@ def main() -> None:
                 ),
             ),
         )
-        .withColumn("parsed", F.from_json("ai.result", FINAL_SCHEMA))
+        .withColumn("parsed", F.from_json("ai.result", FINAL_RESULT_SCHEMA))
+    )
+    valid_plan = (
+        F.col("parsed").isNotNull()
+        & F.col("parsed.units").isNotNull()
+        & (F.size("parsed.units") > 0)
+        & F.forall(
+            F.col("parsed.units"),
+            lambda unit: (
+                unit.unit_id.isNotNull()
+                & unit.title.isNotNull()
+                & unit.knowledge_markdown.isNotNull()
+                & unit.source_document_ids.isNotNull()
+                & (F.size(unit.source_document_ids) > 0)
+            ),
+        )
     )
     plan_rows = consolidated.select(
         "chapter_key", "book_id", "chapter_id", "source_hash",
@@ -243,10 +303,12 @@ def main() -> None:
         F.lit(settings.model_endpoint).alias("model_endpoint"),
         F.lit(settings.prompt_version).alias("prompt_version"),
         F.when(F.col("failed_windows") > 0, "FAILED")
-        .when(F.col("parsed.organization").isNull(), "FAILED")
+        .when(~valid_plan, "FAILED")
         .otherwise("SUCCEEDED").alias("processing_status"),
         F.when(F.col("failed_windows") > 0, F.concat(F.lit("Failed window count: "), F.col("failed_windows")))
-        .otherwise(F.col("ai.errorMessage")).alias("processing_error"),
+        .when(F.col("ai.errorMessage").isNotNull(), F.col("ai.errorMessage"))
+        .when(~valid_plan, F.lit("AI result did not satisfy the required chapter schema"))
+        .alias("processing_error"),
         F.current_timestamp().alias("batch_time"),
     )
     # This MERGE is the single action that evaluates chapter consolidation.
@@ -270,13 +332,13 @@ def main() -> None:
             F.col("p.chapter_id").alias("chapter_id"),
             F.col("p.source_hash").alias("source_hash"),
             F.col("p.pages").alias("pages"),
-            F.from_json(F.col("plan.raw_ai_result"), FINAL_SCHEMA).alias("parsed"),
+            F.from_json(F.col("plan.raw_ai_result"), FINAL_RESULT_SCHEMA).alias("parsed"),
         )
-        .filter(F.col("parsed.organization").isNotNull())
+        .filter(F.col("parsed").isNotNull() & F.col("parsed.units").isNotNull())
     )
     units = valid.select(
         "book_id", "chapter_id", "source_hash", "pages",
-        F.posexplode("parsed.organization.units").alias("unit_pos", "unit"),
+        F.posexplode("parsed.units").alias("unit_pos", "unit"),
     )
     learning = units.select(
         F.sha2(F.concat_ws("|", "book_id", "chapter_id", F.col("unit.unit_id"), F.lit("LEARNING_UNIT")), 256).alias("fine_page_id"),
