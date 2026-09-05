@@ -47,7 +47,7 @@ unit_id:STRING,title:STRING,knowledge_markdown:STRING,
 examples_markdown:ARRAY<STRING>,
 exercises:ARRAY<STRUCT<exercise_id:STRING,title:STRING,markdown:STRING,
 source_document_ids:ARRAY<STRING>,preserve_original:BOOLEAN>>,
-source_document_ids:ARRAY<STRING>>
+source_document_ids:ARRAY<STRING>>>
 >""".replace("\n", "")
 
 WINDOWS_TYPE = T.ArrayType(
