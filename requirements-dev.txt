@@ -1,0 +1,4 @@
+build==1.2.2.post1
+pytest==8.4.2
+PyYAML==6.0.2
+

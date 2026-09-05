@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "markdown-silver-classification"
+version = "1.0.0"
+description = "Incremental Markdown parsing and AI classification on Databricks serverless"
+requires-python = ">=3.11"
+
+[project.scripts]
+setup-silver-tables = "markdown_silver.setup_tables:main"
+parse-sections = "markdown_silver.parse_job:main"
+classify-sections = "markdown_silver.classify_job:main"
+organize-chapters = "markdown_silver.organize_chapters:main"
+verify-silver = "markdown_silver.verify_job:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
