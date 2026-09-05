@@ -139,7 +139,8 @@ def main() -> None:
         .select("chapter_key", "book_id", "chapter_id", "source_hash", "pages", "window.*")
         .withColumn(
             "window_id",
-            F.sha2(F.concat_ws("|", "chapter_key", "source_hash", "window_number", F.lit(settings.prompt_version)), 256),
+            F.sha2(F.concat_ws("|", "chapter_key", "source_hash", "window_number",
+                              F.lit(settings.model_endpoint), F.lit(settings.prompt_version)), 256),
         )
     )
     window_prompt = F.concat(
@@ -162,9 +163,7 @@ def main() -> None:
             ),
         )
         .withColumn("parsed_window", F.from_json("ai.result", WINDOW_SCHEMA))
-        .persist()
     )
-    analyzed.count()  # Materialize each external AI call exactly once.
     window_rows = analyzed.select(
         "window_id", "chapter_key", "book_id", "chapter_id", "window_number",
         "first_page", "last_page", "source_document_ids", "source_hash",
@@ -174,13 +173,42 @@ def main() -> None:
         F.when(F.col("parsed_window.analysis").isNotNull(), "SUCCEEDED").otherwise("FAILED").alias("processing_status"),
         F.col("ai.errorMessage").alias("processing_error"), F.current_timestamp().alias("batch_time"),
     )
+    # This MERGE is the single action that evaluates each window's ai_query.
+    # The next stage reads the durable result rather than caching a DataFrame,
+    # because PERSIST/CACHE is unsupported on Databricks serverless compute.
     _merge_windows(spark, settings, window_rows)
 
+    pending_chapters = pending.select(
+        "chapter_key", "book_id", "chapter_id", "source_hash", "pages"
+    )
+    stored_windows = (
+        spark.table(settings.chapter_windows_table).alias("w")
+        .join(
+            pending_chapters.alias("p"),
+            (F.col("w.chapter_key") == F.col("p.chapter_key"))
+            & (F.col("w.source_hash") == F.col("p.source_hash")),
+            "inner",
+        )
+        .filter(
+            (F.col("w.model_endpoint") == settings.model_endpoint)
+            & (F.col("w.prompt_version") == settings.prompt_version)
+        )
+        .select(
+            F.col("p.chapter_key").alias("chapter_key"),
+            F.col("p.book_id").alias("book_id"),
+            F.col("p.chapter_id").alias("chapter_id"),
+            F.col("p.source_hash").alias("source_hash"),
+            F.col("p.pages").alias("pages"),
+            F.col("w.window_number").alias("window_number"),
+            F.col("w.raw_ai_result").alias("raw_ai_result"),
+            F.col("w.processing_status").alias("window_status"),
+        )
+    )
     consolidation_inputs = (
-        analyzed.groupBy("chapter_key", "book_id", "chapter_id", "source_hash", "pages")
+        stored_windows.groupBy("chapter_key", "book_id", "chapter_id", "source_hash", "pages")
         .agg(
-            F.sort_array(F.collect_list(F.struct("window_number", "ai.result"))).alias("window_results"),
-            F.sum(F.when(F.col("parsed_window.analysis").isNull(), 1).otherwise(0)).alias("failed_windows"),
+            F.sort_array(F.collect_list(F.struct("window_number", "raw_ai_result"))).alias("window_results"),
+            F.sum(F.when(F.col("window_status") != "SUCCEEDED", 1).otherwise(0)).alias("failed_windows"),
         )
     )
     consolidation_prompt = F.concat(
@@ -208,9 +236,7 @@ def main() -> None:
             ),
         )
         .withColumn("parsed", F.from_json("ai.result", FINAL_SCHEMA))
-        .persist()
     )
-    consolidated.count()
     plan_rows = consolidated.select(
         "chapter_key", "book_id", "chapter_id", "source_hash",
         F.col("ai.result").alias("raw_ai_result"),
@@ -223,9 +249,31 @@ def main() -> None:
         .otherwise(F.col("ai.errorMessage")).alias("processing_error"),
         F.current_timestamp().alias("batch_time"),
     )
+    # This MERGE is the single action that evaluates chapter consolidation.
     _merge_plans(spark, settings, plan_rows)
 
-    valid = consolidated.filter(F.col("parsed.organization").isNotNull())
+    valid = (
+        spark.table(settings.chapter_plans_table).alias("plan")
+        .join(
+            pending_chapters.alias("p"),
+            (F.col("plan.chapter_key") == F.col("p.chapter_key"))
+            & (F.col("plan.source_hash") == F.col("p.source_hash")),
+            "inner",
+        )
+        .filter(
+            (F.col("plan.processing_status") == "SUCCEEDED")
+            & (F.col("plan.model_endpoint") == settings.model_endpoint)
+            & (F.col("plan.prompt_version") == settings.prompt_version)
+        )
+        .select(
+            F.col("p.book_id").alias("book_id"),
+            F.col("p.chapter_id").alias("chapter_id"),
+            F.col("p.source_hash").alias("source_hash"),
+            F.col("p.pages").alias("pages"),
+            F.from_json(F.col("plan.raw_ai_result"), FINAL_SCHEMA).alias("parsed"),
+        )
+        .filter(F.col("parsed.organization").isNotNull())
+    )
     units = valid.select(
         "book_id", "chapter_id", "source_hash", "pages",
         F.posexplode("parsed.organization.units").alias("unit_pos", "unit"),
@@ -266,8 +314,7 @@ def main() -> None:
             F.filter("pages", lambda p: F.array_contains(F.col("source_document_ids"), p.document_id)),
             lambda p: p.image_references,
         )),
-    ).drop("pages").withColumn("is_active", F.lit(True)).withColumn("batch_time", F.current_timestamp()).persist()
-    generated.count()
+    ).drop("pages").withColumn("is_active", F.lit(True)).withColumn("batch_time", F.current_timestamp())
 
     target = DeltaTable.forName(spark, settings.fine_pages_table)
     regenerated = valid.select("book_id", "chapter_id").distinct()
@@ -292,9 +339,17 @@ def main() -> None:
     (target.alias("t").merge(generated.alias("s"), "t.fine_page_id=s.fine_page_id")
      .whenMatchedUpdate(set=updates).whenNotMatchedInsert(values=inserts).execute())
 
+    current_window_count = stored_windows.count()
+    current_chapter_count = valid.count()
+    active_page_count = (
+        spark.table(settings.fine_pages_table)
+        .filter(F.col("is_active") == True)
+        .join(pending_chapters.select("book_id", "chapter_id").distinct(), ["book_id", "chapter_id"])
+        .count()
+    )
     print(
-        f"Window analyses={analyzed.count()}; consolidated chapters={valid.count()}; "
-        f"active fine-grained pages generated={generated.count()}"
+        f"Window analyses={current_window_count}; consolidated chapters={current_chapter_count}; "
+        f"active fine-grained pages={active_page_count}"
     )
 
 
