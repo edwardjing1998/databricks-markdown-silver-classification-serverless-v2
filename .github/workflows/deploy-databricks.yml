@@ -1,4 +1,4 @@
-name: Deploy and run Silver classification
+name: Deploy and run Silver page classification
 
 on:
   workflow_dispatch:
@@ -12,39 +12,28 @@ on:
           - qa
           - production
         default: development
-      enable_ai:
-        description: Required for chapter organization and exercise splitting
-        required: true
-        type: boolean
-        default: true
+
       max_pages_per_window:
-        description: Maximum pages in one AI analysis window
+        description: Maximum related pages sent in one AI request (1-20)
         required: true
         type: string
-        default: "15"
-      window_overlap_pages:
-        description: Pages repeated between adjacent windows
-        required: true
-        type: string
-        default: "2"
-      max_window_characters:
-        description: Maximum Markdown characters per analysis window
-        required: true
-        type: string
-        default: "40000"
+        default: "5"
 
 permissions:
   contents: read
 
 concurrency:
-  group: markdown-silver-${{ inputs.environment }}
+  group: markdown-page-classification-${{ inputs.environment }}
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Deploy Silver job to ${{ inputs.environment }}
+    name: Deploy and run ${{ inputs.environment }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
+
+    # This selects the matching GitHub Environment:
+    # development, qa, or production.
     environment: ${{ inputs.environment }}
 
     env:
@@ -64,61 +53,72 @@ jobs:
           cache: pip
 
       - name: Install development dependencies
-        run: pip install -r requirements-dev.txt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
 
       - name: Run tests
-        run: pytest
+        shell: bash
+        run: |
+          set -euo pipefail
+          pytest
 
       - name: Build Python wheel
-        run: python -m build --wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m build --wheel
 
       - name: Install Databricks CLI
         uses: databricks/setup-cli@main
 
-      - name: Validate Databricks authentication configuration
+      - name: Validate GitHub configuration
         shell: bash
+        env:
+          DATABRICKS_CATALOG: ${{ vars.DATABRICKS_CATALOG }}
+          DATABRICKS_BRONZE_SCHEMA: ${{ vars.DATABRICKS_BRONZE_SCHEMA }}
+          DATABRICKS_SILVER_SCHEMA: ${{ vars.DATABRICKS_SILVER_SCHEMA }}
+          DATABRICKS_MODEL_ENDPOINT: ${{ vars.DATABRICKS_MODEL_ENDPOINT }}
+          MAX_PAGES_PER_WINDOW: ${{ inputs.max_pages_per_window }}
         run: |
           set -euo pipefail
 
-          required=(
+          required_values=(
             DATABRICKS_HOST
             DATABRICKS_CLIENT_ID
             DATABRICKS_CLIENT_SECRET
-            DATABRICKS_AUTH_TYPE
+            DATABRICKS_CATALOG
+            DATABRICKS_BRONZE_SCHEMA
+            DATABRICKS_SILVER_SCHEMA
+            DATABRICKS_MODEL_ENDPOINT
           )
 
-          for name in "${required[@]}"; do
+          for name in "${required_values[@]}"; do
             if [[ -z "${!name:-}" ]]; then
-              echo "::error::$name is empty."
+              echo "::error::Required GitHub Environment variable or secret is missing: $name"
               exit 1
             fi
           done
 
-          if [[ ! "$DATABRICKS_HOST" =~ ^https://[A-Za-z0-9.-]+$ ]]; then
-            echo "::error::DATABRICKS_HOST has an invalid format."
+          if [[ ! "$MAX_PAGES_PER_WINDOW" =~ ^[0-9]+$ ]]; then
+            echo "::error::max_pages_per_window must be an integer."
             exit 1
           fi
 
-          max_pages='${{ inputs.max_pages_per_window }}'
-          overlap='${{ inputs.window_overlap_pages }}'
-          max_characters='${{ inputs.max_window_characters }}'
-          if [[ ! "$max_pages" =~ ^[0-9]+$ ]] || (( max_pages < 1 )); then
-            echo "::error::max_pages_per_window must be a positive integer."
-            exit 1
-          fi
-          if [[ ! "$overlap" =~ ^[0-9]+$ ]] || (( overlap >= max_pages )); then
-            echo "::error::window_overlap_pages must be smaller than max_pages_per_window."
-            exit 1
-          fi
-          if [[ ! "$max_characters" =~ ^[0-9]+$ ]] || (( max_characters < 1000 )); then
-            echo "::error::max_window_characters must be at least 1000."
+          if (( MAX_PAGES_PER_WINDOW < 1 || MAX_PAGES_PER_WINDOW > 20 )); then
+            echo "::error::max_pages_per_window must be from 1 through 20."
             exit 1
           fi
 
           echo "Databricks host: $DATABRICKS_HOST"
-          echo "Client ID length: ${#DATABRICKS_CLIENT_ID}"
-          echo "Client secret length: ${#DATABRICKS_CLIENT_SECRET}"
-          echo "Authentication type: $DATABRICKS_AUTH_TYPE"
+          echo "Catalog: $DATABRICKS_CATALOG"
+          echo "Bronze schema: $DATABRICKS_BRONZE_SCHEMA"
+          echo "Silver schema: $DATABRICKS_SILVER_SCHEMA"
+          echo "Model endpoint: $DATABRICKS_MODEL_ENDPOINT"
+          echo "Maximum pages per window: $MAX_PAGES_PER_WINDOW"
+          echo "Required configuration is present."
           echo "Secret values were not displayed."
 
       - name: Verify Databricks OAuth authentication
@@ -128,21 +128,24 @@ jobs:
           databricks auth describe
           databricks current-user me --output json
 
-      - name: Validate bundle
+      - name: Validate Databricks bundle
+        shell: bash
         run: |
+          set -euo pipefail
+
           databricks bundle validate \
             --target "${{ inputs.environment }}" \
             --var="catalog=${{ vars.DATABRICKS_CATALOG }}" \
             --var="bronze_schema=${{ vars.DATABRICKS_BRONZE_SCHEMA }}" \
             --var="silver_schema=${{ vars.DATABRICKS_SILVER_SCHEMA }}" \
             --var="model_endpoint=${{ vars.DATABRICKS_MODEL_ENDPOINT }}" \
-            --var="enable_ai=${{ inputs.enable_ai }}" \
-            --var="max_pages_per_window=${{ inputs.max_pages_per_window }}" \
-            --var="window_overlap_pages=${{ inputs.window_overlap_pages }}" \
-            --var="max_window_characters=${{ inputs.max_window_characters }}"
+            --var="max_pages_per_window=${{ inputs.max_pages_per_window }}"
 
-      - name: Deploy bundle
+      - name: Deploy Databricks bundle
+        shell: bash
         run: |
+          set -euo pipefail
+
           databricks bundle deploy \
             --target "${{ inputs.environment }}" \
             --auto-approve \
@@ -150,20 +153,18 @@ jobs:
             --var="bronze_schema=${{ vars.DATABRICKS_BRONZE_SCHEMA }}" \
             --var="silver_schema=${{ vars.DATABRICKS_SILVER_SCHEMA }}" \
             --var="model_endpoint=${{ vars.DATABRICKS_MODEL_ENDPOINT }}" \
-            --var="enable_ai=${{ inputs.enable_ai }}" \
-            --var="max_pages_per_window=${{ inputs.max_pages_per_window }}" \
-            --var="window_overlap_pages=${{ inputs.window_overlap_pages }}" \
-            --var="max_window_characters=${{ inputs.max_window_characters }}"
+            --var="max_pages_per_window=${{ inputs.max_pages_per_window }}"
 
-      - name: Run Silver job
+      - name: Run Silver page classification
+        shell: bash
         run: |
-          databricks bundle run markdown_silver_classification \
+          set -euo pipefail
+
+          databricks bundle run \
+            markdown_silver_page_classification \
             --target "${{ inputs.environment }}" \
             --var="catalog=${{ vars.DATABRICKS_CATALOG }}" \
             --var="bronze_schema=${{ vars.DATABRICKS_BRONZE_SCHEMA }}" \
             --var="silver_schema=${{ vars.DATABRICKS_SILVER_SCHEMA }}" \
             --var="model_endpoint=${{ vars.DATABRICKS_MODEL_ENDPOINT }}" \
-            --var="enable_ai=${{ inputs.enable_ai }}" \
-            --var="max_pages_per_window=${{ inputs.max_pages_per_window }}" \
-            --var="window_overlap_pages=${{ inputs.window_overlap_pages }}" \
-            --var="max_window_characters=${{ inputs.max_window_characters }}"
+            --var="max_pages_per_window=${{ inputs.max_pages_per_window }}"
