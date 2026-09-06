@@ -37,7 +37,7 @@ def parse_settings() -> Settings:
     parser.add_argument("--max-pages-per-window", type=int, default=5)
     parser.add_argument("--confidence-threshold", type=float, default=0.70)
     args = parser.parse_args()
-    if not 1 <= args.max_pages_per_window <= 5:
+    if not 1 <= args.max_pages_per_window <= 20:
         parser.error("--max-pages-per-window must be between 1 and 5")
     if not 0 <= args.confidence_threshold <= 1:
         parser.error("--confidence-threshold must be between 0 and 1")
