@@ -1,5 +1,5 @@
 bundle:
-  name: markdown-silver-classification
+  name: markdown-silver-page-classification
 
 include:
   - resources/*.yml
@@ -19,24 +19,13 @@ variables:
   silver_schema:
     default: silver
   model_endpoint:
-    description: Databricks Model Serving endpoint used by ai_query
-    default: system.ai.gpt-oss-20b
-  enable_ai:
-    description: Must be true for chapter organization and exercise splitting
-    default: "true"
-  confidence_threshold:
-    default: "0.85"
+    default: databricks-gpt-oss-120b
   prompt_version:
-    default: v2-windowed
+    default: v3-page-window-block-ids
   max_pages_per_window:
-    description: Maximum source pages sent to one AI window request
-    default: "15"
-  window_overlap_pages:
-    description: Pages repeated between adjacent windows
-    default: "2"
-  max_window_characters:
-    description: Approximate maximum Markdown characters in one AI request
-    default: "40000"
+    default: 5
+  confidence_threshold:
+    default: 0.70
 
 targets:
   development:

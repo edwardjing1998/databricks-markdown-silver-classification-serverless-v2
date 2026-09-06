@@ -1,0 +1,42 @@
+resources:
+  jobs:
+    markdown_silver_page_classification:
+      name: markdown-silver-page-classification-${bundle.target}
+      max_concurrent_runs: 1
+      timeout_seconds: 7200
+      tasks:
+        - task_key: setup_tables
+          environment_key: serverless_environment
+          python_wheel_task:
+            package_name: markdown_silver_page_classification
+            entry_point: setup-classification-tables
+            named_parameters: &parameters
+              catalog: ${var.catalog}
+              bronze-schema: ${var.bronze_schema}
+              silver-schema: ${var.silver_schema}
+              model-endpoint: ${var.model_endpoint}
+              prompt-version: ${var.prompt_version}
+              max-pages-per-window: ${var.max_pages_per_window}
+              confidence-threshold: ${var.confidence_threshold}
+        - task_key: classify_page_windows
+          depends_on:
+            - task_key: setup_tables
+          environment_key: serverless_environment
+          python_wheel_task:
+            package_name: markdown_silver_page_classification
+            entry_point: classify-page-windows
+            named_parameters: *parameters
+        - task_key: verify_classifications
+          depends_on:
+            - task_key: classify_page_windows
+          environment_key: serverless_environment
+          python_wheel_task:
+            package_name: markdown_silver_page_classification
+            entry_point: verify-classifications
+            named_parameters: *parameters
+      environments:
+        - environment_key: serverless_environment
+          spec:
+            environment_version: "4"
+            dependencies:
+              - ../dist/*.whl
