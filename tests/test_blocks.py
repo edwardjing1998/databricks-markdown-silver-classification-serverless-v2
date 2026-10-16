@@ -84,3 +84,33 @@ def test_single_exercise_page_is_preserved_inside_multi_page_window():
     assert result["status"] == "SUCCEEDED"
     assert result["sections"][1]["preserved_original"] is True
     assert result["sections"][1]["markdown_content"] == second["markdown_content"]
+
+
+def test_duplicate_section_ids_fail():
+    window = build_page_windows([page(1, "Alpha\n\nBeta")], 5)[0]
+    blocks = json.loads(window["pages_json"])[0]["blocks"]
+    result = materialize_classifications(window["pages_json"], json.dumps({"sections": [
+        {"section_id": "duplicate", "content_type": "KNOWLEDGE", "block_ids": [blocks[0]["block_id"]]},
+        {"section_id": "duplicate", "content_type": "EXERCISE", "block_ids": [blocks[1]["block_id"]]},
+    ]}))
+    assert result["status"] == "FAILED"
+    assert "section_id" in result["error"]
+
+
+def test_repeated_block_id_within_section_fails():
+    window = build_page_windows([page(1, "One block")], 5)[0]
+    block_id = json.loads(window["pages_json"])[0]["blocks"][0]["block_id"]
+    result = materialize_classifications(window["pages_json"], json.dumps({"sections": [
+        {"section_id": "one", "content_type": "KNOWLEDGE", "block_ids": [block_id, block_id]}
+    ]}))
+    assert result["status"] == "FAILED"
+    assert "Duplicate block_ids" in result["error"]
+
+
+def test_reserved_remainder_section_id_fails():
+    window = build_page_windows([page(1, "One\n\nTwo")], 5)[0]
+    block_id = json.loads(window["pages_json"])[0]["blocks"][0]["block_id"]
+    result = materialize_classifications(window["pages_json"], json.dumps({"sections": [
+        {"section_id": "unclassified-remainder", "content_type": "KNOWLEDGE", "block_ids": [block_id]}
+    ]}))
+    assert result["status"] == "FAILED"

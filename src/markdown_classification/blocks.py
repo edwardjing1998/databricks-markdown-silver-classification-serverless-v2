@@ -89,6 +89,7 @@ def materialize_classifications(pages_json: str, raw_result: str | None) -> dict
             for document_id in candidate_documents:
                 section_count_by_document[document_id] = section_count_by_document.get(document_id, 0) + 1
         used: set[str] = set()
+        seen_section_ids: set[str] = set()
         output = []
 
         for position, section in enumerate(sections, start=1):
@@ -98,6 +99,8 @@ def materialize_classifications(pages_json: str, raw_result: str | None) -> dict
                 raise ValueError(f"Unsupported content_type: {content_type}")
             if not isinstance(block_ids, list) or not block_ids:
                 raise ValueError("Every section must have at least one block_id")
+            if len(block_ids) != len(set(block_ids)):
+                raise ValueError("Duplicate block_ids within a section")
             unknown = [block_id for block_id in block_ids if block_id not in block_by_id]
             if unknown:
                 raise ValueError(f"AI returned unknown block IDs: {unknown[:3]}")
@@ -130,6 +133,9 @@ def materialize_classifications(pages_json: str, raw_result: str | None) -> dict
                 markdown_content = next(page["markdown_content"] for page in pages if page["document_id"] == source_ids[0])
             confidence = max(0.0, min(1.0, float(section.get("confidence", 0.0))))
             section_id = str(section.get("section_id") or f"section-{position}")
+            if section_id in seen_section_ids or section_id == "unclassified-remainder":
+                raise ValueError(f"Duplicate or reserved section_id: {section_id}")
+            seen_section_ids.add(section_id)
             output.append({
                 "section_id": section_id,
                 "content_type": content_type,

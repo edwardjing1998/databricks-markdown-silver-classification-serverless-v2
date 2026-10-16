@@ -192,9 +192,8 @@ def merge_fine_pages(
     )
 
 
-def main() -> None:
-    settings = parse_settings()
-    spark = SparkSession.builder.getOrCreate()
+def build_current_windows(spark: SparkSession, settings):
+    """Recompute authoritative window IDs from currently ingested Bronze pages."""
 
     # Do not depend on the Bronze table having a physical content_hash
     # column. Generate a stable SHA-256 hash directly from the Markdown.
@@ -285,6 +284,13 @@ def main() -> None:
             ),
         )
     )
+    return windows
+
+
+def main() -> None:
+    settings = parse_settings()
+    spark = SparkSession.builder.getOrCreate()
+    windows = build_current_windows(spark, settings)
 
     existing = (
         spark.table(settings.windows_table)
@@ -310,109 +316,111 @@ def main() -> None:
         )
     )
 
-    if pending.limit(1).count() == 0:
-        print("No new or failed page windows require classification.")
-        return
+    has_pending = pending.limit(1).count() > 0
+    if not has_pending:
+        print("No new or failed page windows require AI classification; reconciling active results.")
 
-    prompt_instructions = (
-        "You classify ordered Markdown blocks from related mathematics-book "
-        f"pages. This request contains at most "
-        f"{settings.max_pages_per_window} pages. "
-        "Return exactly one JSON object and no code fences or explanation. "
-        "The required JSON schema is: "
-        '{"sections":['
-        "{"
-        '"section_id":"short-stable-id",'
-        '"content_type":"KNOWLEDGE|EXAMPLE|EXERCISE|OTHER",'
-        '"title":"short title",'
-        '"knowledge_id":"shared-concept-id",'
-        '"confidence":0.0,'
-        '"block_ids":["exact-input-block-id"]'
-        "}"
-        "]}. "
-        "Classify every substantive block exactly once. "
-        "A section may use blocks from multiple related pages. "
-        "Separate every individual exercise into its own section. "
-        "Use the same knowledge_id for related knowledge, examples, and "
-        "exercises. "
-        "Never copy Markdown into the response. "
-        "Never invent block IDs. "
-        "Use only block IDs present in the input. "
-        "Preserve the original reading order. "
-        "Headers, footers, and unrelated material may be OTHER."
-        "\nINPUT:\n"
-    )
-
-    prompt = F.concat(
-        F.lit(prompt_instructions),
-        F.col("pages_json"),
-    )
-
-    queried = (
-        pending
-        .withColumn(
-            "prompt",
-            prompt,
+    if has_pending:
+        prompt_instructions = (
+            "You classify ordered Markdown blocks from related mathematics-book "
+            f"pages. This request contains at most "
+            f"{settings.max_pages_per_window} pages. "
+            "Return exactly one JSON object and no code fences or explanation. "
+            "The required JSON schema is: "
+            '{"sections":['
+            "{"
+            '"section_id":"short-stable-id",'
+            '"content_type":"KNOWLEDGE|EXAMPLE|EXERCISE|OTHER",'
+            '"title":"short title",'
+            '"knowledge_id":"shared-concept-id",'
+            '"confidence":0.0,'
+            '"block_ids":["exact-input-block-id"]'
+            "}"
+            "]}. "
+            "Classify every substantive block exactly once. "
+            "A section may use blocks from multiple related pages. "
+            "Separate every individual exercise into its own section. "
+            "Use the same knowledge_id for related knowledge, examples, and "
+            "exercises. "
+            "Never copy Markdown into the response. "
+            "Never invent block IDs. "
+            "Use only block IDs present in the input. "
+            "Preserve the original reading order. "
+            "Headers, footers, and unrelated material may be OTHER."
+            "\nINPUT:\n"
         )
-        .withColumn(
-            "ai",
-            F.expr(
-                "ai_query("
-                f"'{settings.model_endpoint}', "
-                "prompt, "
-                "failOnError => false"
-                ")"
+
+        prompt = F.concat(
+            F.lit(prompt_instructions),
+            F.col("pages_json"),
+        )
+
+        queried = (
+            pending
+            .withColumn(
+                "prompt",
+                prompt,
+            )
+            .withColumn(
+                "ai",
+                F.expr(
+                    "ai_query("
+                    f"'{settings.model_endpoint}', "
+                    "prompt, "
+                    "failOnError => false"
+                    ")"
+                ),
+            )
+        )
+
+        materialize_udf = F.udf(
+            materialize_classifications,
+            MATERIALIZED_TYPE,
+        )
+
+        evaluated = queried.withColumn(
+            "materialized",
+            materialize_udf(
+                F.col("pages_json"),
+                F.col("ai.result"),
             ),
         )
-    )
 
-    materialize_udf = F.udf(
-        materialize_classifications,
-        MATERIALIZED_TYPE,
-    )
+        window_rows = evaluated.select(
+            "window_id",
+            "chapter_key",
+            "book_id",
+            "chapter_id",
+            "window_number",
+            "first_page",
+            "last_page",
+            "source_document_ids",
+            "source_hash",
+            "pages_json",
+            "input_characters",
+            F.col("ai.result").alias("raw_ai_result"),
+            F.lit(settings.model_endpoint).alias("model_endpoint"),
+            F.lit(settings.prompt_version).alias("prompt_version"),
+            F.col("materialized.status").alias("processing_status"),
+            F.coalesce(
+                F.col("ai.errorMessage"),
+                F.col("materialized.error"),
+            ).alias("processing_error"),
+            F.current_timestamp().alias("batch_time"),
+        )
 
-    evaluated = queried.withColumn(
-        "materialized",
-        materialize_udf(
-            F.col("pages_json"),
-            F.col("ai.result"),
-        ),
-    )
-
-    window_rows = evaluated.select(
-        "window_id",
-        "chapter_key",
-        "book_id",
-        "chapter_id",
-        "window_number",
-        "first_page",
-        "last_page",
-        "source_document_ids",
-        "source_hash",
-        "pages_json",
-        "input_characters",
-        F.col("ai.result").alias("raw_ai_result"),
-        F.lit(settings.model_endpoint).alias("model_endpoint"),
-        F.lit(settings.prompt_version).alias("prompt_version"),
-        F.col("materialized.status").alias("processing_status"),
-        F.coalesce(
-            F.col("ai.errorMessage"),
-            F.col("materialized.error"),
-        ).alias("processing_error"),
-        F.current_timestamp().alias("batch_time"),
-    )
-
-    # Persist the AI response once. This prevents ai_query from being
-    # evaluated a second time while fine-grained pages are generated.
-    merge_windows(
-        spark,
-        settings.windows_table,
-        window_rows,
-    )
+        # Persist the AI response once. This prevents ai_query from being
+        # evaluated a second time while fine-grained pages are generated.
+        merge_windows(
+            spark,
+            settings.windows_table,
+            window_rows,
+        )
 
     # Read the stored AI results back from the Delta table.
     stored = (
         spark.table(settings.windows_table)
+        .join(windows.select("window_id"), "window_id", "left_semi")
         .filter(
             (F.col("processing_status") == "SUCCEEDED")
             & (
@@ -518,23 +526,39 @@ def main() -> None:
         F.current_timestamp().alias("batch_time"),
     )
 
-    if fine_rows.limit(1).count() > 0:
-        # Rows generated by older prompt versions remain available for
-        # auditing, but they are no longer active.
-        spark.sql(
-            f"""
-            UPDATE {settings.fine_pages_table}
-            SET is_active = false
-            WHERE coalesce(prompt_version, '') <>
-                  '{settings.prompt_version}'
-            """
+    # Deactivate rows whose source windows are no longer current. Preserve
+    # audit history while preventing superseded windows from being retrieved.
+    current_window_ids = windows.select("window_id").distinct()
+    current_chapters = windows.select("book_id", "chapter_id").distinct()
+    stale_rows = (
+        spark.table(settings.fine_pages_table)
+        .filter(F.col("is_active") == True)
+        .join(current_chapters, ["book_id", "chapter_id"], "inner")
+        .join(current_window_ids, "window_id", "left_anti")
+        .select("fine_page_id").distinct()
+        .withColumn("deactivate", F.lit(True))
+    )
+    if stale_rows.limit(1).count() > 0:
+        (
+            DeltaTable.forName(spark, settings.fine_pages_table)
+            .alias("target")
+            .merge(stale_rows.alias("source"),
+                   "target.fine_page_id = source.fine_page_id")
+            .whenMatchedUpdate(set={"is_active": "false",
+                                    "updated_at": "current_timestamp()"})
+            .execute()
         )
 
-        merge_fine_pages(
-            spark,
-            settings.fine_pages_table,
-            fine_rows,
-        )
+    # The current run must never send two records with the same MERGE key.
+    duplicate_keys = (
+        fine_rows.groupBy("fine_page_id").count()
+        .filter(F.col("count") > 1)
+    )
+    if duplicate_keys.limit(1).count() > 0:
+        raise RuntimeError("Duplicate fine_page_id in current classification batch")
+
+    if fine_rows.limit(1).count() > 0:
+        merge_fine_pages(spark, settings.fine_pages_table, fine_rows)
 
     print("Page-window classification completed.")
 
