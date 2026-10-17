@@ -13,10 +13,44 @@ def strip_front_matter(markdown: str) -> str:
     return re.sub(r"\A\s*---\s*\n.*?\n---\s*\n", "", markdown or "", count=1, flags=re.S)
 
 
+# Markdown headings and standalone numbered tasks are meaningful boundaries,
+# even when the OCR did not insert an empty line. The labels themselves are
+# intentionally not used to make a final classification decision.
+HEADING = re.compile(r"^\s{0,3}#{1,6}\s+\S")
+TASK_LINE = re.compile(r"^\s*(?:\d{1,3}[.)、]|[（(]\d{1,3}[）)])\s*\S")
+
+
+def _split_paragraph_by_structure(paragraph: str) -> list[str]:
+    chunks: list[str] = []
+    current: list[str] = []
+    in_fence = False
+    for line in paragraph.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            in_fence = not in_fence
+        boundary = not in_fence and (HEADING.match(line) or TASK_LINE.match(line))
+        if boundary and current:
+            chunks.append("\n".join(current).strip())
+            current = []
+        current.append(line)
+    if current:
+        chunks.append("\n".join(current).strip())
+    return [item for item in chunks if item]
+
+
 def split_markdown_blocks(document_id: str, markdown: str) -> list[dict[str, Any]]:
-    """Create stable, ordered blocks without asking AI to reproduce Markdown."""
+    """Split Markdown into stable blocks with simple structural boundaries.
+
+    Original text in each block is preserved (excluding surrounding blank lines).
+    This is not a full Markdown AST parser and cannot detect complex geometry
+    structures without layout metadata.
+    """
     body = strip_front_matter(markdown)
-    chunks = [chunk.strip() for chunk in re.split(r"\n\s*\n+", body) if chunk.strip()]
+    chunks = [
+        block
+        for paragraph in re.split(r"\n\s*\n+", body)
+        if paragraph.strip()
+        for block in _split_paragraph_by_structure(paragraph.strip())
+    ]
     return [
         {
             "block_id": f"{document_id}#b{index:03d}",

@@ -19,3 +19,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.setuptools.package-data]
+"markdown_classification.prompts" = ["*.txt"]

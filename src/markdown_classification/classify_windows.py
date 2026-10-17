@@ -8,6 +8,7 @@ from markdown_classification.blocks import (
     materialize_classifications,
 )
 from markdown_classification.config import parse_settings
+from markdown_classification.prompt_loader import classification_prompt
 
 
 WINDOWS_TYPE = T.ArrayType(
@@ -321,34 +322,7 @@ def main() -> None:
         print("No new or failed page windows require AI classification; reconciling active results.")
 
     if has_pending:
-        prompt_instructions = (
-            "You classify ordered Markdown blocks from related mathematics-book "
-            f"pages. This request contains at most "
-            f"{settings.max_pages_per_window} pages. "
-            "Return exactly one JSON object and no code fences or explanation. "
-            "The required JSON schema is: "
-            '{"sections":['
-            "{"
-            '"section_id":"short-stable-id",'
-            '"content_type":"KNOWLEDGE|EXAMPLE|EXERCISE|OTHER",'
-            '"title":"short title",'
-            '"knowledge_id":"shared-concept-id",'
-            '"confidence":0.0,'
-            '"block_ids":["exact-input-block-id"]'
-            "}"
-            "]}. "
-            "Classify every substantive block exactly once. "
-            "A section may use blocks from multiple related pages. "
-            "Separate every individual exercise into its own section. "
-            "Use the same knowledge_id for related knowledge, examples, and "
-            "exercises. "
-            "Never copy Markdown into the response. "
-            "Never invent block IDs. "
-            "Use only block IDs present in the input. "
-            "Preserve the original reading order. "
-            "Headers, footers, and unrelated material may be OTHER."
-            "\nINPUT:\n"
-        )
+        prompt_instructions = classification_prompt(settings.max_pages_per_window)
 
         prompt = F.concat(
             F.lit(prompt_instructions),
