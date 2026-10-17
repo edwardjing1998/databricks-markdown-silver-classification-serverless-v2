@@ -33,7 +33,7 @@ def parse_settings() -> Settings:
     parser.add_argument("--bronze-schema", default="bronze")
     parser.add_argument("--silver-schema", default="silver")
     parser.add_argument("--model-endpoint", default="databricks-gpt-oss-120b")
-    parser.add_argument("--prompt-version", default="v5-math-figure-links")
+    parser.add_argument("--prompt-version", default="v2-geometry-en-classifier")
     parser.add_argument("--max-pages-per-window", type=int, default=5)
     parser.add_argument("--confidence-threshold", type=float, default=0.70)
     args = parser.parse_args()
