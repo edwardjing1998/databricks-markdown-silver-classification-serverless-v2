@@ -69,6 +69,8 @@ def build_page_windows(pages: list[Any] | None, max_pages: int) -> list[dict[str
         value["blocks"] = split_markdown_blocks(value["document_id"], value.get("markdown_content") or "")
         normalized.append(value)
     normalized.sort(key=lambda item: (item.get("page_number") or 0, item["document_id"]))
+    from markdown_classification.figure_linker import annotate_figure_links
+    annotate_figure_links(normalized)
     windows = []
     for start in range(0, len(normalized), max_pages):
         selected = normalized[start:start + max_pages]
@@ -108,10 +110,12 @@ def materialize_classifications(pages_json: str, raw_result: str | None) -> dict
         if not isinstance(sections, list) or not sections:
             raise ValueError("AI result must contain a non-empty sections array")
 
+        from markdown_classification.figure_linker import reconcile_figure_assignments
         ordered_blocks = [
             {**block, "document_id": page["document_id"], "page_number": page.get("page_number")}
             for page in pages for block in page.get("blocks", [])
         ]
+        sections = reconcile_figure_assignments(sections, ordered_blocks)
         block_by_id = {block["block_id"]: block for block in ordered_blocks}
         section_count_by_document: dict[str, int] = {}
         for candidate in sections:
@@ -143,6 +147,7 @@ def materialize_classifications(pages_json: str, raw_result: str | None) -> dict
                 raise ValueError(f"Blocks were assigned more than once: {duplicate[:3]}")
             used.update(block_ids)
             chosen = [block for block in ordered_blocks if block["block_id"] in set(block_ids)]
+            block_ids = [block["block_id"] for block in chosen]
             markdown_content = "\n\n".join(block["markdown"] for block in chosen)
             source_ids = list(dict.fromkeys(block["document_id"] for block in chosen))
             page_numbers = list(dict.fromkeys(block["page_number"] for block in chosen))

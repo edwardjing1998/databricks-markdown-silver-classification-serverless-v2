@@ -21,7 +21,7 @@ variables:
   model_endpoint:
     default: databricks-gpt-oss-120b
   prompt_version:
-    default: v2-geometry-en-classifier
+    default: v5-math-figure-links
   max_pages_per_window:
     default: 5
   confidence_threshold:
