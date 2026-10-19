@@ -28,7 +28,7 @@ variables:
     default: 0.70
 
   bible_catalog:
-    default: bible_rag
+    default: education_rag
   bible_bronze_schema:
     default: bronze
   bible_silver_schema:

@@ -24,7 +24,7 @@ RESULT_SCHEMA=T.StructType([
 
 def arguments():
     p=argparse.ArgumentParser()
-    p.add_argument("--catalog",default="bible_rag")
+    p.add_argument("--catalog",default="education_rag")
     p.add_argument("--bronze-schema",default="bronze")
     p.add_argument("--silver-schema",default="silver")
     p.add_argument("--model-endpoint",default="databricks-gpt-oss-120b")
