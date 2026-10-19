@@ -27,6 +27,19 @@ variables:
   confidence_threshold:
     default: 0.70
 
+  bible_catalog:
+    default: bible_rag
+  bible_bronze_schema:
+    default: bronze
+  bible_silver_schema:
+    default: silver
+  bible_model_endpoint:
+    default: databricks-gpt-oss-120b
+  bible_prompt_version:
+    default: bible-scenes-v1
+  bible_confidence_threshold:
+    default: 0.70
+
 targets:
   development:
     mode: development

@@ -12,6 +12,9 @@ requires-python = ">=3.11"
 setup-classification-tables = "markdown_classification.setup_tables:main"
 classify-page-windows = "markdown_classification.classify_windows:main"
 verify-classifications = "markdown_classification.verify_job:main"
+setup-bible-tables = "markdown_classification.bible_job:setup_main"
+classify-bible-scenes = "markdown_classification.bible_job:classify_main"
+verify-bible-scenes = "markdown_classification.bible_job:verify_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

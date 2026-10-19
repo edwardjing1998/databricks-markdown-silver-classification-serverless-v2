@@ -1,0 +1,41 @@
+resources:
+  jobs:
+    bible_story_scene_classification:
+      name: bible-story-scene-classification-${bundle.target}
+      max_concurrent_runs: 1
+      timeout_seconds: 7200
+      tasks:
+        - task_key: setup_bible_tables
+          environment_key: serverless_environment
+          python_wheel_task:
+            package_name: markdown_silver_page_classification
+            entry_point: setup-bible-tables
+            named_parameters: &bible_parameters
+              catalog: ${var.bible_catalog}
+              bronze-schema: ${var.bible_bronze_schema}
+              silver-schema: ${var.bible_silver_schema}
+              model-endpoint: ${var.bible_model_endpoint}
+              prompt-version: ${var.bible_prompt_version}
+              confidence-threshold: ${var.bible_confidence_threshold}
+        - task_key: classify_bible_scenes
+          depends_on:
+            - task_key: setup_bible_tables
+          environment_key: serverless_environment
+          python_wheel_task:
+            package_name: markdown_silver_page_classification
+            entry_point: classify-bible-scenes
+            named_parameters: *bible_parameters
+        - task_key: verify_bible_scenes
+          depends_on:
+            - task_key: classify_bible_scenes
+          environment_key: serverless_environment
+          python_wheel_task:
+            package_name: markdown_silver_page_classification
+            entry_point: verify-bible-scenes
+            named_parameters: *bible_parameters
+      environments:
+        - environment_key: serverless_environment
+          spec:
+            environment_version: "4"
+            dependencies:
+              - ../dist/*.whl
