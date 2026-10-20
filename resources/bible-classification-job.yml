@@ -17,6 +17,7 @@ resources:
               model-endpoint: ${var.bible_model_endpoint}
               prompt-version: ${var.bible_prompt_version}
               confidence-threshold: ${var.bible_confidence_threshold}
+              include-book-ids: ${var.bible_include_book_ids}
         - task_key: classify_bible_scenes
           depends_on:
             - task_key: setup_bible_tables

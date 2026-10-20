@@ -9,6 +9,7 @@ import re
 from delta.tables import DeltaTable
 from pyspark.sql import SparkSession, functions as F, types as T
 from markdown_classification.bible_scenes import build_page_input, bible_prompt, validate_scenes
+from markdown_classification.source_filters import parse_book_ids
 
 SCENE_STRUCT = T.StructType([
     T.StructField("scene_id",T.StringType()), T.StructField("scene_type",T.StringType()),
@@ -30,6 +31,7 @@ def arguments():
     p.add_argument("--model-endpoint",default="databricks-gpt-oss-120b")
     p.add_argument("--prompt-version",default="bible-scenes-v1")
     p.add_argument("--confidence-threshold",type=float,default=0.70)
+    p.add_argument("--include-book-ids",default="bible_studies")
     args=p.parse_args()
     for name in (args.catalog,args.bronze_schema,args.silver_schema):
         if not re.fullmatch(r"[a-zA-Z_][a-zA-Z_0-9]*", name):
@@ -68,6 +70,7 @@ def classify_main():
     a=arguments(); spark=SparkSession.builder.getOrCreate(); bronze,analysis,scenes=names(a)
     make_json=F.udf(build_page_input,T.StringType())
     source=(spark.table(bronze).filter((F.col("ingestion_status")=="INGESTED") & F.col("markdown_content").isNotNull())
+        .filter(F.col("book_id").isin(*parse_book_ids(a.include_book_ids)))
         .select("document_id","book_id","chapter_id","page_number","markdown_content")
         .withColumn("source_hash",F.sha2("markdown_content",256))
         .withColumn("analysis_id",F.sha2(F.concat_ws("|",F.col("document_id"),F.col("source_hash"),F.lit(a.prompt_version),F.lit(a.model_endpoint)),256))

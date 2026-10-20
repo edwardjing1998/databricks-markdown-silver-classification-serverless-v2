@@ -18,6 +18,7 @@ resources:
               prompt-version: ${var.prompt_version}
               max-pages-per-window: ${var.max_pages_per_window}
               confidence-threshold: ${var.confidence_threshold}
+              exclude-book-ids: ${var.exclude_book_ids}
         - task_key: classify_page_windows
           depends_on:
             - task_key: setup_tables

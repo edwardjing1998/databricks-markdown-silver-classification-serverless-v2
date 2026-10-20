@@ -8,6 +8,7 @@ from markdown_classification.blocks import (
     materialize_classifications,
 )
 from markdown_classification.config import parse_settings
+from markdown_classification.source_filters import parse_book_ids
 from markdown_classification.prompt_loader import classification_prompt
 
 
@@ -216,6 +217,11 @@ def build_current_windows(spark: SparkSession, settings):
         )
     )
 
+    # Exclude Bible content from the original mathematics classifier.
+    excluded = parse_book_ids(settings.exclude_book_ids)
+    if excluded:
+        bronze = bronze.filter(~F.col("book_id").isin(*excluded))
+
     # Rename the calculated hash to content_hash inside the page structure
     # because build_page_windows() expects that field.
     page_struct = F.struct(
@@ -317,6 +323,7 @@ def main() -> None:
         )
     )
 
+    materialize_udf = F.udf(materialize_classifications, MATERIALIZED_TYPE)
     has_pending = pending.limit(1).count() > 0
     if not has_pending:
         print("No new or failed page windows require AI classification; reconciling active results.")
@@ -345,11 +352,6 @@ def main() -> None:
                     ")"
                 ),
             )
-        )
-
-        materialize_udf = F.udf(
-            materialize_classifications,
-            MATERIALIZED_TYPE,
         )
 
         evaluated = queried.withColumn(

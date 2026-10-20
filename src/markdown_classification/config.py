@@ -13,6 +13,7 @@ class Settings:
     prompt_version: str
     max_pages_per_window: int
     confidence_threshold: float
+    exclude_book_ids: str = "bible_studies"
 
     @property
     def bronze_table(self) -> str:
@@ -36,6 +37,7 @@ def parse_settings() -> Settings:
     parser.add_argument("--prompt-version", default="v2-geometry-en-classifier")
     parser.add_argument("--max-pages-per-window", type=int, default=5)
     parser.add_argument("--confidence-threshold", type=float, default=0.70)
+    parser.add_argument("--exclude-book-ids", default="bible_studies")
     args = parser.parse_args()
     if not 1 <= args.max_pages_per_window <= 20:
         parser.error("--max-pages-per-window must be between 1 and 20")
@@ -44,5 +46,5 @@ def parse_settings() -> Settings:
     return Settings(
         args.catalog, args.bronze_schema, args.silver_schema,
         args.model_endpoint, args.prompt_version,
-        args.max_pages_per_window, args.confidence_threshold,
+        args.max_pages_per_window, args.confidence_threshold, args.exclude_book_ids,
     )

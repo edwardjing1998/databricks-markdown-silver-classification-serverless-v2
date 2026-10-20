@@ -26,6 +26,8 @@ variables:
     default: 5
   confidence_threshold:
     default: 0.70
+  exclude_book_ids:
+    default: bible_studies
 
   bible_catalog:
     default: education_rag
@@ -39,6 +41,8 @@ variables:
     default: bible-scenes-v1
   bible_confidence_threshold:
     default: 0.70
+  bible_include_book_ids:
+    default: bible_studies
 
 targets:
   development:
