@@ -37,4 +37,4 @@ STRICT BLOCK-ID VALIDATION BEFORE OUTPUT:
 - Check every section's block_ids for duplicates, and then check for overlaps across sections. Correct any overlaps before responding.
 - If a block_id is not listed in the supplied input, never include it in the result even if it appears to follow the input's naming convention.
 
-INPUT PAGES (JSON):
+"INPUT PAGES (JSON):\n"
