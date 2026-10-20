@@ -8,6 +8,7 @@ from markdown_classification.blocks import (
     materialize_classifications,
 )
 from markdown_classification.config import parse_settings
+from markdown_classification.layout_input import attach_layout
 from markdown_classification.source_filters import parse_book_ids
 from markdown_classification.prompt_loader import classification_prompt
 
@@ -222,6 +223,9 @@ def build_current_windows(spark: SparkSession, settings):
     if excluded:
         bronze = bronze.filter(~F.col("book_id").isin(*excluded))
 
+    bronze = attach_layout(spark, bronze, settings.layout_root)
+    bronze = bronze.withColumn("_content_hash", F.sha2(F.concat_ws("|", F.col("markdown_content"), F.coalesce(F.col("layout_json"), F.lit(""))), 256))
+
     # Rename the calculated hash to content_hash inside the page structure
     # because build_page_windows() expects that field.
     page_struct = F.struct(
@@ -229,6 +233,7 @@ def build_current_windows(spark: SparkSession, settings):
         F.col("document_id").alias("document_id"),
         F.col("markdown_content").alias("markdown_content"),
         F.col("image_references").alias("image_references"),
+        F.col("layout_json").alias("layout"),
         F.col("_content_hash").alias("content_hash"),
     )
 

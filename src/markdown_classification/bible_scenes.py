@@ -11,10 +11,10 @@ from markdown_classification.blocks import split_markdown_blocks, extract_json_o
 SCENE_TYPES = frozenset({"SCRIPTURE_STORY", "SCRIPTURE_REFERENCE", "DOCTRINAL_TEACHING", "LIFE_APPLICATION", "DISCUSSION_QUESTION", "PRAYER_REFLECTION", "TABLE_OF_CONTENTS", "OTHER"})
 
 
-def build_page_input(document_id: str, page_number: int | None, markdown: str) -> str:
+def build_page_input(document_id: str, page_number: int | None, markdown: str, layout_json: str | None = None) -> str:
     blocks = split_markdown_blocks(document_id, markdown)
     return json.dumps({"document_id": document_id, "page_number": page_number,
-                       "blocks": blocks}, ensure_ascii=False)
+                       "blocks": blocks, "layout": json.loads(layout_json) if layout_json else None}, ensure_ascii=False)
 
 
 def bible_prompt() -> str:

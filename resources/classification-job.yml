@@ -19,6 +19,7 @@ resources:
               max-pages-per-window: ${var.max_pages_per_window}
               confidence-threshold: ${var.confidence_threshold}
               exclude-book-ids: ${var.exclude_book_ids}
+              layout-root: ${var.layout_root}
         - task_key: classify_page_windows
           depends_on:
             - task_key: setup_tables

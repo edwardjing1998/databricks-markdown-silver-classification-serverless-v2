@@ -1,4 +1,3 @@
-
 """Independent Bible-study Databricks Serverless pipeline.
 
 Run via: setup-bible-tables -> classify-bible-scenes -> verify-bible-scenes.
@@ -11,6 +10,7 @@ from delta.tables import DeltaTable
 from pyspark.sql import SparkSession, functions as F, types as T
 from markdown_classification.bible_scenes import build_page_input, bible_prompt, validate_scenes
 from markdown_classification.source_filters import parse_book_ids
+from markdown_classification.layout_input import attach_layout
 
 SCENE_STRUCT = T.StructType([
     T.StructField("scene_id",T.StringType()), T.StructField("scene_type",T.StringType()),
@@ -33,6 +33,7 @@ def arguments():
     p.add_argument("--prompt-version",default="bible-scenes-v1")
     p.add_argument("--confidence-threshold",type=float,default=0.70)
     p.add_argument("--include-book-ids",default="bible_studies")
+    p.add_argument("--layout-root",default="")
     args=p.parse_args()
     for name in (args.catalog,args.bronze_schema,args.silver_schema):
         if not re.fullmatch(r"[a-zA-Z_][a-zA-Z_0-9]*", name):
@@ -72,10 +73,11 @@ def classify_main():
     make_json=F.udf(build_page_input,T.StringType())
     source=(spark.table(bronze).filter((F.col("ingestion_status")=="INGESTED") & F.col("markdown_content").isNotNull())
         .filter(F.col("book_id").isin(*parse_book_ids(a.include_book_ids)))
-        .select("document_id","book_id","chapter_id","page_number","markdown_content")
-        .withColumn("source_hash",F.sha2("markdown_content",256))
+        .select("document_id","book_id","chapter_id","page_number","markdown_content"))
+    source=(attach_layout(spark,source,a.layout_root)
+        .withColumn("source_hash",F.sha2(F.concat_ws("|",F.col("markdown_content"),F.coalesce(F.col("layout_json"),F.lit(""))),256))
         .withColumn("analysis_id",F.sha2(F.concat_ws("|",F.col("document_id"),F.col("source_hash"),F.lit(a.prompt_version),F.lit(a.model_endpoint)),256))
-        .withColumn("page_json",make_json("document_id","page_number","markdown_content")))
+        .withColumn("page_json",make_json("document_id","page_number","markdown_content","layout_json")))
     saved=spark.table(analysis).select("analysis_id",F.col("processing_status").alias("old_status"))
     pending=(source.join(saved,"analysis_id","left").filter(F.coalesce(F.col("old_status"),F.lit("FAILED"))!="SUCCEEDED"))
     validator=F.udf(validate_scenes,RESULT_SCHEMA)
@@ -94,12 +96,8 @@ def classify_main():
          .whenMatchedUpdate(set={x:f"s.{x}" for x in cols if x!="analysis_id"})
          .whenNotMatchedInsert(values={x:f"s.{x}" for x in cols}).execute())
     # Read persisted model responses; avoid re-evaluating ai_query during downstream writes.
-    # Join only on unique analysis IDs. The persisted analysis table owns
-    # document_id and all other metadata used to materialize scene rows.
-    # Including current.document_id would leave two ambiguous columns after
-    # the join and fail when scene_rows selects document_id.
-    current_ids=source.select("analysis_id").distinct()
-    successful=(spark.table(analysis).join(current_ids,"analysis_id","inner")
+    current=source.select("analysis_id","document_id").distinct()
+    successful=(spark.table(analysis).join(current,"analysis_id","inner")
       .filter(F.col("processing_status")=="SUCCEEDED")
       .withColumn("parsed",validator("page_json","raw_ai_result")))
     scene_rows=(successful.select("analysis_id","document_id","book_id","chapter_id","page_number","source_hash",

@@ -29,6 +29,9 @@ variables:
   exclude_book_ids:
     default: bible_studies
 
+  layout_root:
+    default: ""
+
   bible_catalog:
     default: education_rag
   bible_bronze_schema:
@@ -41,6 +44,8 @@ variables:
     default: bible-scenes-v1
   bible_confidence_threshold:
     default: 0.70
+  bible_layout_root:
+    default: ""
   bible_include_book_ids:
     default: bible_studies
 
