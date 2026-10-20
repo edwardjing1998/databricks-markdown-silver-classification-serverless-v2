@@ -1,3 +1,4 @@
+
 """Independent Bible-study Databricks Serverless pipeline.
 
 Run via: setup-bible-tables -> classify-bible-scenes -> verify-bible-scenes.
@@ -93,8 +94,12 @@ def classify_main():
          .whenMatchedUpdate(set={x:f"s.{x}" for x in cols if x!="analysis_id"})
          .whenNotMatchedInsert(values={x:f"s.{x}" for x in cols}).execute())
     # Read persisted model responses; avoid re-evaluating ai_query during downstream writes.
-    current=source.select("analysis_id","document_id").distinct()
-    successful=(spark.table(analysis).join(current,"analysis_id","inner")
+    # Join only on unique analysis IDs. The persisted analysis table owns
+    # document_id and all other metadata used to materialize scene rows.
+    # Including current.document_id would leave two ambiguous columns after
+    # the join and fail when scene_rows selects document_id.
+    current_ids=source.select("analysis_id").distinct()
+    successful=(spark.table(analysis).join(current_ids,"analysis_id","inner")
       .filter(F.col("processing_status")=="SUCCEEDED")
       .withColumn("parsed",validator("page_json","raw_ai_result")))
     scene_rows=(successful.select("analysis_id","document_id","book_id","chapter_id","page_number","source_hash",

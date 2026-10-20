@@ -1,4 +1,5 @@
-name: Deploy and run Silver page classification
+
+name: Deploy and run Silver classification
 
 on:
   workflow_dispatch:
@@ -13,8 +14,18 @@ on:
           - production
         default: development
 
+      classification_job:
+        description: Choose classification pipeline
+        required: true
+        type: choice
+        options:
+          - maths
+          - bible
+          - both
+        default: maths
+
       max_pages_per_window:
-        description: Maximum related pages sent in one AI request (1-20)
+        description: Maximum related pages per maths AI request (1-20)
         required: true
         type: string
         default: "5"
@@ -28,12 +39,11 @@ concurrency:
 
 jobs:
   deploy:
-    name: Deploy and run ${{ inputs.environment }}
+    name: Deploy and run ${{ inputs.classification_job }} in ${{ inputs.environment }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
-    # This selects the matching GitHub Environment:
-    # development, qa, or production.
+    # Selects the matching GitHub Environment.
     environment: ${{ inputs.environment }}
 
     env:
@@ -41,6 +51,15 @@ jobs:
       DATABRICKS_CLIENT_ID: ${{ secrets.DATABRICKS_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.DATABRICKS_CLIENT_SECRET }}
       DATABRICKS_AUTH_TYPE: oauth-m2m
+
+      DATABRICKS_CATALOG: ${{ vars.DATABRICKS_CATALOG }}
+      DATABRICKS_BRONZE_SCHEMA: ${{ vars.DATABRICKS_BRONZE_SCHEMA }}
+      DATABRICKS_SILVER_SCHEMA: ${{ vars.DATABRICKS_SILVER_SCHEMA }}
+      DATABRICKS_MODEL_ENDPOINT: ${{ vars.DATABRICKS_MODEL_ENDPOINT }}
+
+      TARGET: ${{ inputs.environment }}
+      SELECTED_JOB: ${{ inputs.classification_job }}
+      MAX_PAGES_PER_WINDOW: ${{ inputs.max_pages_per_window }}
 
     steps:
       - name: Check out repository
@@ -57,13 +76,13 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          python -m pip install -r requirements-dev.txt
 
       - name: Run tests
         shell: bash
         run: |
           set -euo pipefail
-          pytest
+          python -m pytest -q
 
       - name: Build Python wheel
         shell: bash
@@ -76,12 +95,6 @@ jobs:
 
       - name: Validate GitHub configuration
         shell: bash
-        env:
-          DATABRICKS_CATALOG: ${{ vars.DATABRICKS_CATALOG }}
-          DATABRICKS_BRONZE_SCHEMA: ${{ vars.DATABRICKS_BRONZE_SCHEMA }}
-          DATABRICKS_SILVER_SCHEMA: ${{ vars.DATABRICKS_SILVER_SCHEMA }}
-          DATABRICKS_MODEL_ENDPOINT: ${{ vars.DATABRICKS_MODEL_ENDPOINT }}
-          MAX_PAGES_PER_WINDOW: ${{ inputs.max_pages_per_window }}
         run: |
           set -euo pipefail
 
@@ -97,7 +110,7 @@ jobs:
 
           for name in "${required_values[@]}"; do
             if [[ -z "${!name:-}" ]]; then
-              echo "::error::Required GitHub Environment variable or secret is missing: $name"
+              echo "::error::Missing configuration: $name"
               exit 1
             fi
           done
@@ -107,10 +120,20 @@ jobs:
             exit 1
           fi
 
-          if (( MAX_PAGES_PER_WINDOW < 1 || MAX_PAGES_PER_WINDOW > 20 )); then
-            echo "::error::max_pages_per_window must be from 1 through 20."
+          if (( MAX_PAGES_PER_WINDOW < 1 ||
+                MAX_PAGES_PER_WINDOW > 20 )); then
+            echo "::error::max_pages_per_window must be from 1 to 20."
             exit 1
           fi
+
+          case "$SELECTED_JOB" in
+            maths|bible|both)
+              ;;
+            *)
+              echo "::error::Unknown classification job: $SELECTED_JOB"
+              exit 1
+              ;;
+          esac
 
           echo "Databricks host: $DATABRICKS_HOST"
           echo "Catalog: $DATABRICKS_CATALOG"
@@ -118,6 +141,7 @@ jobs:
           echo "Silver schema: $DATABRICKS_SILVER_SCHEMA"
           echo "Model endpoint: $DATABRICKS_MODEL_ENDPOINT"
           echo "Maximum pages per window: $MAX_PAGES_PER_WINDOW"
+          echo "Selected classification job: $SELECTED_JOB"
           echo "Required configuration is present."
           echo "Secret values were not displayed."
 
@@ -134,12 +158,12 @@ jobs:
           set -euo pipefail
 
           databricks bundle validate \
-            --target "${{ inputs.environment }}" \
-            --var="catalog=${{ vars.DATABRICKS_CATALOG }}" \
-            --var="bronze_schema=${{ vars.DATABRICKS_BRONZE_SCHEMA }}" \
-            --var="silver_schema=${{ vars.DATABRICKS_SILVER_SCHEMA }}" \
-            --var="model_endpoint=${{ vars.DATABRICKS_MODEL_ENDPOINT }}" \
-            --var="max_pages_per_window=${{ inputs.max_pages_per_window }}"
+            --target "$TARGET" \
+            --var="catalog=$DATABRICKS_CATALOG" \
+            --var="bronze_schema=$DATABRICKS_BRONZE_SCHEMA" \
+            --var="silver_schema=$DATABRICKS_SILVER_SCHEMA" \
+            --var="model_endpoint=$DATABRICKS_MODEL_ENDPOINT" \
+            --var="max_pages_per_window=$MAX_PAGES_PER_WINDOW"
 
       - name: Deploy Databricks bundle
         shell: bash
@@ -147,24 +171,45 @@ jobs:
           set -euo pipefail
 
           databricks bundle deploy \
-            --target "${{ inputs.environment }}" \
+            --target "$TARGET" \
             --auto-approve \
-            --var="catalog=${{ vars.DATABRICKS_CATALOG }}" \
-            --var="bronze_schema=${{ vars.DATABRICKS_BRONZE_SCHEMA }}" \
-            --var="silver_schema=${{ vars.DATABRICKS_SILVER_SCHEMA }}" \
-            --var="model_endpoint=${{ vars.DATABRICKS_MODEL_ENDPOINT }}" \
-            --var="max_pages_per_window=${{ inputs.max_pages_per_window }}"
+            --var="catalog=$DATABRICKS_CATALOG" \
+            --var="bronze_schema=$DATABRICKS_BRONZE_SCHEMA" \
+            --var="silver_schema=$DATABRICKS_SILVER_SCHEMA" \
+            --var="model_endpoint=$DATABRICKS_MODEL_ENDPOINT" \
+            --var="max_pages_per_window=$MAX_PAGES_PER_WINDOW"
 
-      - name: Run Silver page classification
+      - name: Run selected Silver classification
         shell: bash
         run: |
           set -euo pipefail
 
-          databricks bundle run \
-            markdown_silver_page_classification \
-            --target "${{ inputs.environment }}" \
-            --var="catalog=${{ vars.DATABRICKS_CATALOG }}" \
-            --var="bronze_schema=${{ vars.DATABRICKS_BRONZE_SCHEMA }}" \
-            --var="silver_schema=${{ vars.DATABRICKS_SILVER_SCHEMA }}" \
-            --var="model_endpoint=${{ vars.DATABRICKS_MODEL_ENDPOINT }}" \
-            --var="max_pages_per_window=${{ inputs.max_pages_per_window }}"
+          bundle_run() {
+            databricks bundle run "$1" \
+              --target "$TARGET" \
+              --var="catalog=$DATABRICKS_CATALOG" \
+              --var="bronze_schema=$DATABRICKS_BRONZE_SCHEMA" \
+              --var="silver_schema=$DATABRICKS_SILVER_SCHEMA" \
+              --var="model_endpoint=$DATABRICKS_MODEL_ENDPOINT" \
+              --var="max_pages_per_window=$MAX_PAGES_PER_WINDOW"
+          }
+
+          case "$SELECTED_JOB" in
+            maths)
+              echo "Running mathematics classification..."
+              bundle_run markdown_silver_page_classification
+              ;;
+
+            bible)
+              echo "Running Bible scene classification..."
+              bundle_run bible_story_scene_classification
+              ;;
+
+            both)
+              echo "Running mathematics classification..."
+              bundle_run markdown_silver_page_classification
+
+              echo "Running Bible scene classification..."
+              bundle_run bible_story_scene_classification
+              ;;
+          esac
