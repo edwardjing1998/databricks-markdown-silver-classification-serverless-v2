@@ -192,15 +192,27 @@ def attach_layout(spark, bronze_rows, layout_root: str, *, max_layout_bytes: int
         raise ValueError("Invalid source_markdown_path for layout root: " + details)
 
     selected_paths = rows.select("_expected_layout_path").distinct()
-    scan_roots = [r["_scan_root"] for r in rows.select("_scan_root").distinct().collect()]
-    # Scan only authorized generated roots, including the distinct upload UUID roots.
-    # Never strip UUIDs from exact layout paths or reuse similarly named pages.
-    layouts = (spark.read.format("binaryFile")
+
+    scan_roots = [
+        r["_scan_root"]
+        for r in rows.select("_scan_root").distinct().collect()
+    ]
+
+    if not scan_roots:
+        raise ValueError("No layout scan roots were found")
+
+    layouts = (
+        spark.read.format("binaryFile")
         .option("recursiveFileLookup", "true")
         .option("pathGlobFilter", "layout.json")
-        .load(*scan_roots)
-        .select(F.col("path").alias("_expected_layout_path"), "length", "content")
-        .join(selected_paths, "_expected_layout_path", "inner"))
+        .load(scan_roots)
+        .select(
+            F.col("path").alias("_expected_layout_path"),
+            "length",
+            "content"
+        )
+        .join(selected_paths, "_expected_layout_path", "inner")
+    )
 
     dupes = (layouts.groupBy("_expected_layout_path")
         .count().filter(F.col("count") > 1).limit(5).collect())
