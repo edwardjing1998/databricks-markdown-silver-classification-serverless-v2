@@ -172,3 +172,20 @@ def test_legacy_bible_entrypoint_preserved():
     from pathlib import Path
     code = Path(__file__).parents[1].joinpath("src/markdown_classification/bible_job.py").read_text()
     assert '.select("document_id","book_id","chapter_id","page_number","markdown_content")' in code
+
+
+def test_optional_exact_layout_only_errors_for_malformed_present_files():
+    """Regression guard: a missing sibling layout must not abort classification."""
+    import inspect
+    from markdown_classification.layout_input import attach_layout
+    source = inspect.getsource(attach_layout)
+    assert 'result.filter(F.col("_layout_error").isNotNull())' in source
+    assert '.load(scan_roots)' in source
+
+
+def test_optional_legacy_bible_layout_only_errors_for_malformed_present_files():
+    """Bible's legacy call must continue accepting absent optional layouts."""
+    import inspect
+    from markdown_classification.layout_input import _attach_legacy_layout
+    source = inspect.getsource(_attach_legacy_layout)
+    assert '.filter(F.col("_layout_error").isNotNull())' in source

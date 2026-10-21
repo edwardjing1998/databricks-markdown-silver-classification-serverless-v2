@@ -155,8 +155,8 @@ def attach_layout(spark, bronze_rows, layout_root: str, *, max_layout_bytes: int
                   max_compact_bytes: int = 200_000):
     """Attach layouts by exact sibling URI from Bronze source_markdown_path.
 
-    Missing or ambiguous layouts fail explicitly; never borrow another book's
-    layout based on a common page name. The Bible and Math pipelines must pass
+    Missing layouts are optional (Markdown-only classification). Existing malformed
+    or ambiguous layouts still fail; never borrow another book's layout. The Bible and Math pipelines must pass
     source_markdown_path through their Bronze selection.
     """
     from pyspark.sql import functions as F, types as T
@@ -192,27 +192,15 @@ def attach_layout(spark, bronze_rows, layout_root: str, *, max_layout_bytes: int
         raise ValueError("Invalid source_markdown_path for layout root: " + details)
 
     selected_paths = rows.select("_expected_layout_path").distinct()
-
-    scan_roots = [
-        r["_scan_root"]
-        for r in rows.select("_scan_root").distinct().collect()
-    ]
-
-    if not scan_roots:
-        raise ValueError("No layout scan roots were found")
-
-    layouts = (
-        spark.read.format("binaryFile")
+    scan_roots = [r["_scan_root"] for r in rows.select("_scan_root").distinct().collect()]
+    # Scan only authorized generated roots, including the distinct upload UUID roots.
+    # Never strip UUIDs from exact layout paths or reuse similarly named pages.
+    layouts = (spark.read.format("binaryFile")
         .option("recursiveFileLookup", "true")
         .option("pathGlobFilter", "layout.json")
         .load(scan_roots)
-        .select(
-            F.col("path").alias("_expected_layout_path"),
-            "length",
-            "content"
-        )
-        .join(selected_paths, "_expected_layout_path", "inner")
-    )
+        .select(F.col("path").alias("_expected_layout_path"), "length", "content")
+        .join(selected_paths, "_expected_layout_path", "inner"))
 
     dupes = (layouts.groupBy("_expected_layout_path")
         .count().filter(F.col("count") > 1).limit(5).collect())
@@ -247,7 +235,9 @@ def attach_layout(spark, bronze_rows, layout_root: str, *, max_layout_bytes: int
                 F.col("_parsed.layout_json").alias("layout_json"),
                 F.col("_parsed.error").alias("_layout_error")))
     result = rows.join(compact, "_expected_layout_path", "left")
-    errors = (result.filter(F.col("layout_json").isNull())
+    # No sibling layout.json is a normal Markdown-only page. A layout that
+    # exists but cannot be parsed/compacted remains a hard error.
+    errors = (result.filter(F.col("_layout_error").isNotNull())
         .select("document_id", "_expected_layout_path", "_layout_error")
         .limit(5).collect())
     if errors:
@@ -320,8 +310,10 @@ def _attach_legacy_layout(spark, bronze_rows, layout_root: str, *, max_layout_by
         .select("_layout_key", F.col("_parsed.layout_json").alias("layout_json"),
                 F.col("_parsed.error").alias("_layout_error")))
     result = rows.join(compact, "_layout_key", "left")
+    # Preserve Bible's legacy lookup, but allow pages with no layout file.
+    # Only a present layout that fails compaction is an error.
     errors = (result
-        .filter(F.col("layout_json").isNull())
+        .filter(F.col("_layout_error").isNotNull())
         .select("document_id", "_layout_key", "_layout_error")
         .limit(5).collect())
     if errors:
