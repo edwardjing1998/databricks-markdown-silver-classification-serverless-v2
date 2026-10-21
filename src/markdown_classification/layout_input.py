@@ -6,11 +6,37 @@ is deliberately omitted from the model's compact positional representation.
 from __future__ import annotations
 
 import json
+import re
 
-_SOURCE = r"(?m)^sourceBlob:\s*[\"']?(?:[^/\s\"']*/)?([^/\s\"']+/[^/\s\"']+/[^/\s\"']+)"
-_LAYOUT = r"/generated/([^/]+/[^/]+/[^/]+)/layout\.json$"
+_SOURCE = r"""(?im)^[ \t]*sourceBlob[ \t]*:[ \t]*["']?([^"'\r\n]+)"""
+# Capture the final book/chapter/page directory, including nested generated roots.
+_LAYOUT = r"/generated/(?:[^/]+/)*([^/]+/[^/]+/[^/]+)/layout\.json$"
 PROCESSOR_VERSION = "compact-layout-v3"
 
+
+
+def resolve_layout_key(document_id: str | None, source_blob: str | None = None) -> str:
+    """Resolve the canonical book/chapter/page key without a UUID prefix.
+
+    Prefer Bronze document_id: original sourceBlob can contain upload UUIDs,
+    legacy versions or intermediate directories unrelated to the output path.
+    """
+    if document_id:
+        candidate = str(document_id).strip().strip("/")
+        parts = candidate.split("/")
+        if len(parts) == 3 and all(p not in ("", ".", "..") for p in parts):
+            return candidate
+
+    # Backwards-compatible fallback for older rows without canonical IDs.
+    source = (source_blob or "").strip().strip("\"'")
+    source = source.split("?", 1)[0].strip("/")
+    parts = source.split("/")
+    if len(parts) >= 3:
+        tail = parts[-3:]
+        tail[-1] = re.sub(r"\.[^./]+$", "", tail[-1])
+        if all(p not in ("", ".", "..") for p in tail):
+            return "/".join(tail)
+    return ""
 
 def _geometry(region):
     """Preserve polygons/page coordinates without repetitive OCR payloads."""
@@ -102,11 +128,17 @@ def attach_layout(spark, bronze_rows, layout_root: str, *, max_layout_bytes: int
     if not layout_root:
         return bronze_rows.withColumn("layout_json", F.lit(None).cast("string"))
     root = layout_root.rstrip("/")
+    key_udf = F.udf(resolve_layout_key, T.StringType())
     rows = (bronze_rows
         .withColumn("_source_key", F.regexp_extract("markdown_content", _SOURCE, 1))
-        .withColumn("_layout_key", F.regexp_replace("_source_key", r"\.[^.\/]+$", "")))
-    if rows.filter(F.col("_layout_key") == "").limit(1).count():
-        raise ValueError("Markdown sourceBlob is missing or cannot be mapped to a layout.json path")
+        .withColumn("_layout_key", key_udf(F.col("document_id"), F.col("_source_key"))))
+    invalid = (rows.filter(F.col("_layout_key") == "")
+        .select("document_id", "_source_key").limit(5).collect())
+    if invalid:
+        raise ValueError(
+            "Cannot determine book/chapter/page layout key: " +
+            "; ".join(f"document_id={r['document_id']} sourceBlob={r['_source_key']}" for r in invalid)
+        )
     selected_keys = rows.select("_layout_key").distinct()
 
     # Spark binaryFile scans the root, but only matched files are decoded,

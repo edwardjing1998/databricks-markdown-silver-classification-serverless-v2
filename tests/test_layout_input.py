@@ -1,7 +1,7 @@
 import json
 import pytest
 from markdown_classification.bible_scenes import build_page_input
-from markdown_classification.layout_input import compact_layout, PROCESSOR_VERSION
+from markdown_classification.layout_input import compact_layout, PROCESSOR_VERSION, resolve_layout_key
 
 
 def test_bible_layout_included():
@@ -89,3 +89,27 @@ def test_actual_azure_di_wrapper_three_figures_and_seven_paragraphs():
 def test_utf8_bom_supported():
     payload = b"\xef\xbb\xbf" + json.dumps({"analyzeResult": {"figures": [{"id": "1.1"}]}}).encode()
     assert json.loads(compact_layout(payload))["figures"][0]["id"] == "1.1"
+
+
+def test_math_uuid_source_uses_canonical_document_id():
+    assert resolve_layout_key(
+        "adam_math_v2_cleansed/maths_time_2/maths-time-2_20260923215214283",
+        "f6acee40-3e86-40ae-84b8-9585892cd141/adam_math_v2_cleansed/maths_time_2/maths-time-2_20260923215214283.jpeg"
+    ) == "adam_math_v2_cleansed/maths_time_2/maths-time-2_20260923215214283"
+
+
+def test_math_nested_source_prefers_document_id_over_intermediate_directories():
+    assert resolve_layout_key(
+        "adam_math_v2/maths_calculation/maths-calculation-1",
+        "c95b095e-131a-4e46-87e0-e7a2738b66c8/adam_math_v2_cleansed_v2/adam_math_v2/maths_calculation/maths-calculation-1.jpeg"
+    ) == "adam_math_v2/maths_calculation/maths-calculation-1"
+
+
+def test_source_blob_fallback_handles_multiple_directory_depths():
+    assert resolve_layout_key(None, "uuid/series/book/chapter/page.jpeg") == "book/chapter/page"
+
+
+def test_bible_document_id_remains_unchanged():
+    assert resolve_layout_key("bible_studies/old_testament_stories/page_20261019191024512") == (
+        "bible_studies/old_testament_stories/page_20261019191024512"
+    )
