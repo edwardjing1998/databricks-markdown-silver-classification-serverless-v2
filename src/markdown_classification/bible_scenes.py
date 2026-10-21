@@ -32,6 +32,12 @@ def validate_scenes(page_json: str, ai_result: str | None) -> dict:
         blocks = source["blocks"]
         by_id = {b["block_id"]: b for b in blocks}
         image_order = list(dict.fromkeys(link for b in blocks for link in b["image_links"]))
+        # A model may select an image but omit the Markdown block containing it.
+        # Recover source ownership deterministically, without inventing links.
+        image_sources: dict[str, list[str]] = {}
+        for block in blocks:
+            for link in block["image_links"]:
+                image_sources.setdefault(link, []).append(block["block_id"])
         used_blocks: set[str] = set()
         used_images: set[str] = set()
         used_ids: set[str] = set()
@@ -47,10 +53,26 @@ def validate_scenes(page_json: str, ai_result: str | None) -> dict:
                 raise ValueError("Invalid, unknown or duplicate block_ids")
             if not isinstance(links, list) or len(links) != len(set(links)) or any(x not in image_order or x in used_images for x in links):
                 raise ValueError("Unknown or duplicate image link")
-            # A link may only be assigned to a scene whose source blocks contain it.
-            own_links = {link for bid in ids for link in by_id[bid]["image_links"]}
-            if any(x not in own_links for x in links):
-                raise ValueError("Image must belong to assigned source blocks")
+            # Ensure each claimed image belongs to the scene's assigned source
+            # blocks. A missing image-only block may be attached once, but never
+            # steal a block already assigned to another scene.
+            assigned_ids = set(ids)
+            for link in links:
+                if any(link in by_id[bid]["image_links"] for bid in assigned_ids):
+                    continue
+                owners = image_sources[link]  # link already checked above
+                available = [bid for bid in owners if bid not in used_blocks]
+                if not available:
+                    raise ValueError("Image source block already assigned to another scene")
+                # Ambiguous multiple available owners must not be chosen randomly.
+                if len(available) != 1:
+                    raise ValueError("Ambiguous image source blocks")
+                assigned_ids.add(available[0])
+            # Source document order is stable, even when the model returns IDs
+            # out of order or omits an image source block.
+            ids = [block["block_id"] for block in blocks if block["block_id"] in assigned_ids]
+            if any(bid in used_blocks for bid in ids):
+                raise ValueError("Block already assigned to another scene")
             refs = candidate.get("scripture_references", [])
             if not isinstance(refs, list) or any(not isinstance(x, str) for x in refs):
                 raise ValueError("scripture_references must be strings")
