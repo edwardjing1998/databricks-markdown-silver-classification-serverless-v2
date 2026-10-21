@@ -1,7 +1,7 @@
 import json
 import pytest
 from markdown_classification.bible_scenes import build_page_input
-from markdown_classification.layout_input import compact_layout, PROCESSOR_VERSION, resolve_layout_key
+from markdown_classification.layout_input import compact_layout, PROCESSOR_VERSION, resolve_layout_key, expected_layout_path
 
 
 def test_bible_layout_included():
@@ -113,3 +113,33 @@ def test_bible_document_id_remains_unchanged():
     assert resolve_layout_key("bible_studies/old_testament_stories/page_20261019191024512") == (
         "bible_studies/old_testament_stories/page_20261019191024512"
     )
+
+
+@pytest.mark.parametrize("markdown_path,layout_path", [
+    (
+        "abfss://education@account.dfs.core.windows.net/generated/book-01/chapter-01/page-07/content.md",
+        "abfss://education@account.dfs.core.windows.net/generated/book-01/chapter-01/page-07/layout.json",
+    ),
+    (
+        "abfss://education@account.dfs.core.windows.net/generated/adam-maths-course/chapter-6/book-01/chapter-01/page-07/content.md",
+        "abfss://education@account.dfs.core.windows.net/generated/adam-maths-course/chapter-6/book-01/chapter-01/page-07/layout.json",
+    ),
+    (
+        "abfss://education@account.dfs.core.windows.net/generated/bible_studies/old_testament_stories/page_20261019191024512/content.md",
+        "abfss://education@account.dfs.core.windows.net/generated/bible_studies/old_testament_stories/page_20261019191024512/layout.json",
+    ),
+])
+def test_expected_layout_path_exact_sibling(markdown_path, layout_path):
+    assert expected_layout_path(markdown_path) == layout_path
+
+
+def test_math_nested_paths_remain_distinct():
+    root = "abfss://education@account.dfs.core.windows.net/generated/"
+    simple = expected_layout_path(root + "book-01/chapter-01/page-07/content.md")
+    nested = expected_layout_path(root + "adam-maths-course/chapter-6/book-01/chapter-01/page-07/content.md")
+    assert simple != nested
+
+
+@pytest.mark.parametrize("bad_path", [None, "", "book/chapter/page.jpeg", "generated/book/chapter/page/file.txt"])
+def test_bad_markdown_source_path_rejected(bad_path):
+    assert expected_layout_path(bad_path) == ""
