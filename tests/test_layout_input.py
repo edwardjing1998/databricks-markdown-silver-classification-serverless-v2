@@ -1,7 +1,7 @@
 import json
 import pytest
 from markdown_classification.bible_scenes import build_page_input
-from markdown_classification.layout_input import compact_layout, PROCESSOR_VERSION, resolve_layout_key, expected_layout_path
+from markdown_classification.layout_input import compact_layout, PROCESSOR_VERSION, resolve_layout_key, expected_layout_path, permitted_scan_root
 
 
 def test_bible_layout_included():
@@ -143,3 +143,32 @@ def test_math_nested_paths_remain_distinct():
 @pytest.mark.parametrize("bad_path", [None, "", "book/chapter/page.jpeg", "generated/book/chapter/page/file.txt"])
 def test_bad_markdown_source_path_rejected(bad_path):
     assert expected_layout_path(bad_path) == ""
+
+
+def test_standard_and_uuid_generated_roots():
+    root = "abfss://education@account.dfs.core.windows.net/generated"
+    normal = root + "/adam-maths-course/chapter-1/page-01/content.md"
+    uuid_root = "abfss://education@account.dfs.core.windows.net/f6acee40-3e86-40ae-84b8-9585892cd141/generated"
+    uuid_page = uuid_root + "/adam_math_v2_cleansed/maths_time_2/page/content.md"
+    assert permitted_scan_root(normal, root) == root
+    assert permitted_scan_root(uuid_page, root) == uuid_root
+    assert expected_layout_path(uuid_page) == uuid_root + "/adam_math_v2_cleansed/maths_time_2/page/layout.json"
+
+
+def test_reject_other_accounts_and_arbitrary_prefixes():
+    root = "abfss://education@account.dfs.core.windows.net/generated"
+    assert permitted_scan_root("abfss://other@account.dfs.core.windows.net/generated/a/b/content.md", root) == ""
+    assert permitted_scan_root("abfss://education@other.dfs.core.windows.net/generated/a/b/content.md", root) == ""
+    assert permitted_scan_root("abfss://education@account.dfs.core.windows.net/arbitrary/generated/a/b/content.md", root) == ""
+
+
+def test_bible_path_does_not_require_uuid():
+    root = "abfss://education@account.dfs.core.windows.net/generated"
+    bible = root + "/bible_studies/old_testament_stories/page/content.md"
+    assert permitted_scan_root(bible, root) == root
+
+
+def test_legacy_bible_entrypoint_preserved():
+    from pathlib import Path
+    code = Path(__file__).parents[1].joinpath("src/markdown_classification/bible_job.py").read_text()
+    assert '.select("document_id","book_id","chapter_id","page_number","markdown_content")' in code
