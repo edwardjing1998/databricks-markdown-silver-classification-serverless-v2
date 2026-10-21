@@ -8,3 +8,16 @@ image_links MUST exactly match Markdown links in the supplied page. Never invent
 Use page-number and caption context; never classify table-of-contents illustrations as story scenes. Prefer conservative grouping when image-caption association is ambiguous. Keep caption succinct and supported by the source. Confidence must be 0 to 1. All meaningful image links should appear exactly once; unassigned links are tracked separately by validation.
 
 When layout is provided, use its spatial coordinates and reading-order elements to associate nearby figure and script blocks. layout is metadata, NOT image pixels. When layout is null, use only the Markdown. Never invent a figure-to-text relation.
+
+LAYOUT-AWARE GROUPING:
+When layout is present, use layout.figures[*].id and boundingRegions polygons
+together with layout.paragraphs[*].text_anchor, role and boundingRegions.
+Group paragraphs underneath each figure in the same column, considering page
+number, horizontal overlap and reading order. Exclude pageFooter/pageHeader.
+For the illustrated Adam and Eve page with 3 separate figures, create 3 scenes
+when the Markdown provides distinct matching blocks and image links. A page
+with 3 detected figures does not automatically imply 3 story scenes: decorative
+figures and TOC pages are exceptions. Never fabricate figure-to-image mapping.
+Preserve original scripture text and block boundaries. If Markdown combines
+multiple illustrated units in one indivisible block, do not reuse its block_id
+across scenes; report conservative grouping and low confidence for review.

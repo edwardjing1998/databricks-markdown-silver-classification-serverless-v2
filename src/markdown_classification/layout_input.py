@@ -9,7 +9,7 @@ import json
 
 _SOURCE = r"(?m)^sourceBlob:\s*[\"']?(?:[^/\s\"']*/)?([^/\s\"']+/[^/\s\"']+/[^/\s\"']+)"
 _LAYOUT = r"/generated/([^/]+/[^/]+/[^/]+)/layout\.json$"
-PROCESSOR_VERSION = "compact-layout-v2"
+PROCESSOR_VERSION = "compact-layout-v3"
 
 
 def _geometry(region):
@@ -29,8 +29,8 @@ def compact_layout(raw: bytes | str | dict, *, max_compact_bytes: int = 200_000)
     Supports Azure DI AnalyzeResult and its common {'analyzeResult': ...} wrapper.
     Raises on malformed/oversized compact output rather than hiding figures.
     """
-    if isinstance(raw, bytes):
-        raw = raw.decode("utf-8")
+    if isinstance(raw, (bytes, bytearray, memoryview)):
+        raw = bytes(raw).decode("utf-8-sig")
     obj = json.loads(raw) if isinstance(raw, str) else raw
     if not isinstance(obj, dict):
         raise ValueError("layout.json root must be a JSON object")
@@ -69,7 +69,7 @@ def compact_layout(raw: bytes | str | dict, *, max_compact_bytes: int = 200_000)
                 item[key] = paragraph[key]
         # Retain a small anchor for spatial/Markdown matching; not all OCR text.
         if isinstance(paragraph.get("content"), str):
-            item["text_anchor"] = paragraph["content"][:160]
+            item["text_anchor"] = paragraph["content"][:320]
         paragraphs.append(item)
 
     tables = []
@@ -126,9 +126,34 @@ def attach_layout(spark, bronze_rows, layout_root: str, *, max_layout_bytes: int
     if oversized:
         raise ValueError(f"Matched layout.json exceeds {max_layout_bytes} raw bytes: {oversized[0]['path']}")
 
-    compact_udf = F.udf(lambda b: compact_layout(b, max_compact_bytes=max_compact_bytes), T.StringType())
-    compact = layouts.select("_layout_key", compact_udf("content").alias("layout_json"))
+    # Return a structured result rather than throwing from a distributed UDF.
+    # This preserves the offending blob path and avoids an opaque worker stack trace.
+    result_type = T.StructType([
+        T.StructField("layout_json", T.StringType(), True),
+        T.StructField("error", T.StringType(), True),
+    ])
+
+    def _safe_compact(content, path):
+        try:
+            return (compact_layout(content, max_compact_bytes=max_compact_bytes), None)
+        except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            return (None, f"{path}: {type(exc).__name__}: {exc}")
+
+    compact_udf = F.udf(_safe_compact, result_type)
+    compact = (layouts
+        .select("_layout_key", compact_udf(F.col("content"), F.col("path")).alias("_parsed"))
+        .select("_layout_key", F.col("_parsed.layout_json").alias("layout_json"),
+                F.col("_parsed.error").alias("_layout_error")))
     result = rows.join(compact, "_layout_key", "left")
-    if result.filter(F.col("layout_json").isNull()).limit(1).count():
-        raise ValueError("At least one selected Bronze page has no matching layout.json; check sourceBlob and layout-root")
-    return result.drop("_source_key", "_layout_key")
+    errors = (result
+        .filter(F.col("layout_json").isNull())
+        .select("document_id", "_layout_key", "_layout_error")
+        .limit(5).collect())
+    if errors:
+        details = "; ".join(
+            f"document_id={r['document_id']} key={r['_layout_key']} "
+            f"error={r['_layout_error'] or 'NO_MATCHING_LAYOUT'}"
+            for r in errors
+        )
+        raise ValueError(f"Layout compaction/matching failed: {details}")
+    return result.drop("_source_key", "_layout_key", "_layout_error")

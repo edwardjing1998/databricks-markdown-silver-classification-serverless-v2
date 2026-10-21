@@ -50,3 +50,42 @@ def test_figures_caption_and_tables_are_preserved():
     compact = json.loads(compact_layout(data))
     assert compact["figures"][0]["caption"]["content"] == "Hannah"
     assert compact["tables"][0]["columnCount"] == 2
+
+
+
+def test_actual_azure_di_wrapper_three_figures_and_seven_paragraphs():
+    polygons = [
+        [184, 481, 1261, 481, 1261, 1350, 184, 1350],
+        [1321, 478, 2398, 478, 2398, 1359, 1321, 1358],
+        [176, 1868, 2383, 1870, 2381, 2747, 173, 2745],
+    ]
+    texts = [
+        "Eve gave Adam some of the fruit. He also chose to eat it.",
+        "Genesis 3:6-7; Moses 4:12",
+        "God and the Lord visited them, but Adam and Eve were afraid and hid.",
+        "Genesis 3:8-13; Moses 4:13-14",
+        "Adam and Eve told God that they chose to eat the fruit.",
+        "Genesis 3:16-24; Moses 4:15-31",
+        "Adam and Eve 15",
+    ]
+    wrapped = {"status": "succeeded", "analyzeResult": {
+        "pages": [{"pageNumber": 1, "width": 2550, "height": 3300, "unit": "pixel"}],
+        "figures": [{"id": f"1.{i}", "boundingRegions": [{"pageNumber": 1, "polygon": polygon}]}
+                    for i, polygon in enumerate(polygons, 1)],
+        "paragraphs": [{"content": v, "role": "pageFooter" if i == 6 else None,
+                        "boundingRegions": [{"pageNumber": 1, "polygon": [1, 2, 3, 2, 3, 4, 1, 4]}]}
+                       for i, v in enumerate(texts)],
+        "content": "full original OCR text " * 100000,
+    }}
+    parsed = json.loads(compact_layout(json.dumps(wrapped).encode("utf-8")))
+    assert len(parsed["pages"]) == 1
+    assert [f["id"] for f in parsed["figures"]] == ["1.1", "1.2", "1.3"]
+    assert len(parsed["paragraphs"]) == 7
+    assert parsed["figures"][2]["boundingRegions"][0]["polygon"] == polygons[2]
+    assert parsed["paragraphs"][6]["role"] == "pageFooter"
+    assert "full original OCR text" not in json.dumps(parsed)
+
+
+def test_utf8_bom_supported():
+    payload = b"\xef\xbb\xbf" + json.dumps({"analyzeResult": {"figures": [{"id": "1.1"}]}}).encode()
+    assert json.loads(compact_layout(payload))["figures"][0]["id"] == "1.1"
