@@ -96,8 +96,9 @@ def classify_main():
          .whenMatchedUpdate(set={x:f"s.{x}" for x in cols if x!="analysis_id"})
          .whenNotMatchedInsert(values={x:f"s.{x}" for x in cols}).execute())
     # Read persisted model responses; avoid re-evaluating ai_query during downstream writes.
-    current=source.select("analysis_id","document_id").distinct()
-    successful=(spark.table(analysis).join(current,"analysis_id","inner")
+    # Membership filter only: prevent duplicate document_id columns from the join.
+    current=source.select("analysis_id").distinct()
+    successful=(spark.table(analysis).join(current,"analysis_id","left_semi")
       .filter(F.col("processing_status")=="SUCCEEDED")
       .withColumn("parsed",validator("page_json","raw_ai_result")))
     scene_rows=(successful.select("analysis_id","document_id","book_id","chapter_id","page_number","source_hash",
